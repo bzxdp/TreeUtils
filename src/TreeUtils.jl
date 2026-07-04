@@ -2,7 +2,7 @@ module TreeUtils
 
 using Graphs
 using MetaGraphsNext
-using TreeIO
+using TreesIO
 
 ### Functions to export
 export get_leaves, identify_clade_members, find_lca, find_lca_largest_subset, find_root_node_with_outgroup, root_tree, annotate_clades!, make_newick_rooted, identify_stem_edge, get_internal_edges, find_long_branch_stacks, get_outermoste_edge, identify_clade_for_removal, get_all_nodes_in_clade, colour_node!, annotate_node!
