@@ -37,8 +37,10 @@ function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::St
     ## for each node collect the set of leaves in its subtree
     ## the LCA is the deepest node whose subtree contains all taxa
     ## Needs a root node to provide directionality to search (this is not a biological root) any random internal node will do.
-    if haskey(unrooted_tree.graph_data, "original_root") ## if a rooting point is stored, use it -- This is from Newick_to_Metagraph function in TreeIO
-        root::String = unrooted_tree.graph_data["original_root"]
+    
+    if haskey(unrooted_tree.graph_data, "original_root_edge") ## if a rooting point is stored, use it -- This is from Newick_to_Metagraph function in TreeIO
+        (node_a, node_b) = unrooted_tree.graph_data["original_root_edge"]
+        root::String = node_a  ## either side works as a traversal starting point
     else
         all_leaves::Vector{String} = sort(collect(get_leaves(unrooted_tree))) ## else root alphabetically arbitrary but repeatible -- will root tree on taxon with lower alphabet letter
         root = all_leaves[1]
