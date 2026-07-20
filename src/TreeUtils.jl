@@ -29,60 +29,45 @@ function get_leaves(unrooted_tree::MetaGraph)::Set{String}
     return taxa_in_tree
 end
 ############
+### find the lca of a set of taxa in the metagraphs (treated as unrooted) so check all possible clades using blocked BFS.
 
-#### find the last common ancestor of a set of taxa in a metagraph tree
 function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::String="unknown")::Union{String,Nothing}
-    
-    ## do a post order traversal to root and find the node that is ancestor of all taxa
-    ## for each node collect the set of leaves in its subtree
-    ## the LCA is the deepest node whose subtree contains all taxa
-    ## Needs a root node to provide directionality to search (this is not a biological root) any random internal node will do.
-    
-    if haskey(unrooted_tree.graph_data, "original_root_edge") ## if a rooting point is stored, use it -- This is from Newick_to_Metagraph function in TreeIO
-        (node_a, node_b) = unrooted_tree.graph_data["original_root_edge"]
-        root::String = node_a  ## either side works as a traversal starting point
-    else
-        all_leaves::Vector{String} = sort(collect(get_leaves(unrooted_tree))) ## else root alphabetically arbitrary but repeatible -- will root tree on taxon with lower alphabet letter
-        root = all_leaves[1]
-    end
     taxa_set::Set{String} = Set{String}(taxa)
-
-    ## recursive helper that returns the set of leaves in the subtree rooted at node
-    ## and records the LCA when found
-    lca_found::Ref{Union{String,Nothing}} = Ref{Union{String,Nothing}}(nothing)
-
-    function get_leaves_in_subtree(node_name::String, parent_name::Union{String,Nothing})::Set{String}
-        leaves::Set{String}= Set{String}()
-
-        #base case
-        if unrooted_tree[node_name].is_a_leaf
-            push!(leaves, node_name)
-            return leaves
+    
+    for node_label::String in labels(unrooted_tree)
+        if unrooted_tree[node_label].is_a_leaf
+            continue  ## LCA must be an internal node (unless taxa_set has size 1, handled elsewhere)
         end
-
-        for neighbour::String in neighbor_labels(unrooted_tree, node_name) ## loop neighbor one by one.
-            if neighbour == parent_name
-                continue
+        for blocked::String in neighbor_labels(unrooted_tree, node_label)
+            ## BFS from node_label, blocking this neighbour direction
+            leaves::Set{String} = Set{String}()
+            visited::Set{String} = Set{String}([blocked])
+            queue::Vector{String} = [node_label]
+            while !isempty(queue)
+                current::String = popfirst!(queue)
+                if current in visited
+                    continue
+                end
+                push!(visited, current)
+                if unrooted_tree[current].is_a_leaf
+                    push!(leaves, current)
+                end
+                for nb::String in neighbor_labels(unrooted_tree, current)
+                    if !(nb in visited)
+                        push!(queue, nb)
+                    end
+                end
             end
-            child_leaves::Set{String} = get_leaves_in_subtree(neighbour, node_name)
-            leaves= union!(leaves, child_leaves)
+            if leaves == taxa_set
+                return node_label
+            end
         end
-
-        ## check if this node is the LCA — its subtree contains all taxa
-        ## and we have not found the LCA yet
-
-        if isnothing(lca_found[]) && issubset(taxa_set, leaves) && leaves == taxa_set
-            lca_found[] = node_name
-        end
-        return leaves
     end
-    get_leaves_in_subtree(root, nothing) ### start recursion by passing the root node.  This is whatever was root when reading newick.  Does not ned to be real root. just a reference for traversal
-
-    if isnothing(lca_found[])
-        @warn "Could not find a LCA for clade $(clade_name) that included ALL taxa in its definition — the full set of taxa in $(clade_name) is not monophyletic in tree"
-    end
-    return lca_found[]
-end
+    
+    @warn "Could not find a LCA for clade $(clade_name) that included ALL taxa in its definition — the full set of taxa in $(clade_name) is not monophyletic in tree"
+    return nothing
+end 
+####
 
 #### find the LCA of the largest monophyletic subset of taxa
 #### handles missing taxa and non-monophyletic clades
@@ -291,7 +276,7 @@ end
 #### This turns a metagraph into a rooted newick string using the rooting priority logic
 #### priority 1 — explicit root passed as argument
 #### priority 2 — outgroup stored in graph_data
-#### priority 3 — original root from newick stored in graph_data
+#### priority 3 — original root edge from newick stored in graph_data
 #### priority 4 — alphabetical fallback via make_newick_unrooted
 function make_newick_rooted(unrooted_tree::MetaGraph, root_name::Union{String,Nothing}=nothing)::String
 
@@ -304,13 +289,15 @@ function make_newick_rooted(unrooted_tree::MetaGraph, root_name::Union{String,No
         root_name = root_tree(unrooted_tree, outgroup)
         if isnothing(root_name)
             ## root_tree already warned — fall to priority 3
-            if haskey(unrooted_tree.graph_data, "original_root")
-                root_name = unrooted_tree.graph_data["original_root"]
+            if haskey(unrooted_tree.graph_data, "original_root_edge")
+                (node_a, node_b) = unrooted_tree.graph_data["original_root_edge"]
+                root_name = node_a
             end
         end
-    ## priority 3 — original root from newick stored in graph_data
-    elseif haskey(unrooted_tree.graph_data, "original_root")
-        root_name = unrooted_tree.graph_data["original_root"]
+    ## priority 3 — original root edge from newick stored in graph_data
+    elseif haskey(unrooted_tree.graph_data, "original_root_edge")
+        (node_a, node_b) = unrooted_tree.graph_data["original_root_edge"]
+        root_name = node_a
     end
 
     ## priority 4 — alphabetical fallback via make_newick_unrooted
