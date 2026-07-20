@@ -31,7 +31,8 @@ end
 ############
 ### find the lca of a set of taxa in the metagraphs (treated as unrooted) so check all possible clades using blocked BFS.
 
-function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::String="unknown")::Union{String,Nothing}
+function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::String="unknown"; warn_on_failure::Bool=true)::Union{String,Nothing}
+
     taxa_set::Set{String} = Set{String}(taxa)
     
     for node_label::String in labels(unrooted_tree)
@@ -64,7 +65,12 @@ function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::St
         end
     end
     
+    ## The error message is in an if because it is true that lca not found (and correct) when used to identify quartets: quartet_topology() function 
+    if warn_on_failure
     @warn "Could not find a LCA for clade $(clade_name) that included ALL taxa in its definition — the full set of taxa in $(clade_name) is not monophyletic in tree"
+    end
+    ##
+
     return nothing
 end 
 ####
