@@ -2,10 +2,11 @@ module TreeUtils
 
 using Graphs
 using MetaGraphsNext
+using Combinatorics
 using TreesIO
 
 ### Functions to export
-export get_leaves, identify_clade_members, find_lca, find_lca_largest_subset, find_root_node_with_outgroup, root_tree, annotate_clades!, make_newick_rooted, identify_stem_edge, get_internal_edges, find_long_branch_stacks, get_outermoste_edge, identify_clade_for_removal, get_all_nodes_in_clade, colour_node!, annotate_node!
+export get_leaves, get_nodes, get_shared_leaves, get_tree_fadj_list, get_taxa_translation_table, bbfs_get_bipartitions, quartet_topology, print_bipartitions, unweighted_path_distance, prune_tree, identify_clade_members, find_lca, find_lca_largest_subset, find_root_node_with_outgroup, root_tree, annotate_clades!, make_newick_rooted, identify_stem_edge, get_internal_edges, find_long_branch_stacks, get_outermoste_edge, identify_clade_for_removal, get_all_nodes_in_clade, colour_node!, annotate_node!
 ###
 
 ### function to add colours to a Metagraph
@@ -28,9 +29,330 @@ function get_leaves(unrooted_tree::MetaGraph)::Set{String}
     end
     return taxa_in_tree
 end
-############
-### find the lca of a set of taxa in the metagraphs (treated as unrooted) so check all possible clades using blocked BFS.
 
+### Function to retain the intersection of leaves from two trees (shared leaves) 
+function get_shared_leaves(treeA:: MetaGraph, TreeB::MetaGraph)::Set{String}
+	
+    ## return value:
+    shared::Set{String}= Set{String}()
+    ##
+	
+    leavesA = get_leaves(treeA)
+    leavesB = get_leaves(TreeB)
+	
+	
+    shared= intersect(leavesA, leavesB)
+    return shared
+end
+
+### This is a general helper: standardise the way we get the list of all nodes from a tree (get_nodes, get_leaves get_shared leaves) 
+function get_nodes(tree::MetaGraph)::Set{String}
+    return Set(labels(tree)) ## uses a MetaGraph function
+end
+
+### This is a UTILITY to get the forward adjacency list from MetaGraph. 
+### Needed in the BFS version to get the clades in a tree
+### This is a more efficient way to do BFS that starting from leaves
+### In the future all BFS should use this approach and this helper.   
+function get_tree_fadj_list(tree::MetaGraph)::Vector{Vector{Int64}}
+	
+    ### rerturned
+    tree_adj_list::Vector{Vector{Int64}}=Vector{Vector{Int64}}()
+
+    ### function itself
+    ### uses function from Graph/MetaGraph package (graph.fadjlist)
+    return tree.graph.fadjlist
+end
+
+### This UTILITY is also for BFS. To be used with get_tree_fadj_list() in fast BFS.
+function get_taxa_translation_table(tree::MetaGraph)::Dict{Int64, String}
+    
+    ### rerturned
+    translation_table::Dict{Int64, String}=Dict{Int64, String}()
+    return tranlation_table= tree.vertex_labels
+end
+
+## This is a KEY function. Get all clades in a tree their stem BL and support.
+## This underpins Component COnsensus methods: Strict, Maj Rule, RF-Dist etc.  
+## takes a tree and gets its bipartitions, as well as supporting info bl of bipartition (edge between the two clades) and suport for that edge.
+## The function works on a tree at a time its a generic Utility for TreesUtils
+## bbfs stands for BLOCKED_BFS
+function bbfs_get_bipartitions(tree::MetaGraph, graph_adj_list::Vector{Vector{Int64}}, translation_table::Dict{Int64,String})::Tuple{Vector{Tuple{Set{String},Set{String}}}, Dict{Tuple{Set{String},Set{String}},Float64}, Dict{Tuple{Set{String},Set{String}},Float64}, Int64}
+
+    ## returned bipartitions is the key.  The other are accessory
+    bipartitions::Vector{Tuple{Set{String},Set{String}}} = Vector{Tuple{Set{String},Set{String}}}()
+        
+    ntaxa::Int64= 0 ##### accessory returned value necessary for some downstream computations (e.g. normalisations)
+        
+    bips_supports::Dict{Tuple{Set{String},Set{String}},Float64} = Dict{Tuple{Set{String},Set{String}},Float64}()
+        
+    bips_bls::Dict{Tuple{Set{String},Set{String}},Float64} = Dict{Tuple{Set{String},Set{String}},Float64}()
+    ###
+
+    ### get the leaves Set.  This is to know nodes to skip
+    leaves_set::Set{Int64} = Set{Int64}()
+    for (index, neighbours) in enumerate(graph_adj_list)
+        if length(neighbours) == 1
+        push!(leaves_set, index)
+        end
+    end
+    ntaxa= length(leaves_set)
+            
+    #### modified bfs with bloked nodes to get splits out
+    #### This gets the bipartitions/splits
+    for node::Int64 in 1:length(graph_adj_list)
+        if length(graph_adj_list[node]) == 1 ## skip leaves as enry points
+            continue
+        end
+        println("travrsing tree from node $(node)")
+        for blocked_node in graph_adj_list[node]
+            leaves_on_inner_side::Vector{Int64} = Vector{Int64}() ## these are nodes on the node side of the edge (inner) in opposition to outer side of edge (blocked node side)
+            visited_nodes::Set{Int64}= Set{Int64}([blocked_node, node]) ### Key step add the blocked node to visited so it will never be seen
+            queued_neighbours_of_node::Vector{Int64}= [neighbour for neighbour::Int64 in graph_adj_list[node]]
+            while !isempty(queued_neighbours_of_node)
+                (current_node)= popfirst!(queued_neighbours_of_node)
+                if current_node in visited_nodes
+                   continue
+                end
+                push!(visited_nodes, current_node)
+                if length(graph_adj_list[current_node]) ==1
+                   push!(leaves_on_inner_side, current_node)
+                end
+                for nb::Int64 in graph_adj_list[current_node]
+                   if !(nb in visited_nodes)
+                       push!(queued_neighbours_of_node, nb)
+                   end
+                end
+            end
+            inner_side_sorted = sort(leaves_on_inner_side)
+            outer_side_sorted = sort([l for l in leaves_set if !(l in leaves_on_inner_side)])
+            if length(inner_side_sorted) == 1
+                continue
+            end
+
+            ## get node and blocked_node labels for EdgeData lookup
+            ## this is to get support and bl to do
+            ## weighted RF and other functions where we need extra info on the bipartition
+            node_label::String = translation_table[node]
+            blocked_label::String = translation_table[blocked_node]
+
+            ## get support and branch length from EdgeData
+            edge_support::Union{Float64,Missing} = missing
+            edge_bl::Union{Float64,Missing} = missing
+
+            ## edge_data is a TreesIO defined struct. it is a dict storing bl and support.  Accessible via a tuple of nodes.
+            ## we do not know if a branch was initially stored  nl-bl or bl-nl so we test both possibilities.
+            if !tree[node_label].is_a_leaf && !tree[blocked_label].is_a_leaf
+                if haskey(tree.edge_data, (node_label, blocked_label))
+                    edge = tree.edge_data[(node_label, blocked_label)]
+                    edge_support = edge.support
+                    edge_bl = edge.length
+                elseif haskey(tree.edge_data, (blocked_label, node_label))
+                    edge = tree.edge_data[(blocked_label, node_label)]
+                    edge_support = edge.support
+                    edge_bl = edge.length
+                end
+            end
+                        
+            if length(inner_side_sorted) < length(outer_side_sorted)
+                inner_labeled = Set(sort([translation_table[i] for i in inner_side_sorted]))
+                outer_labeled = Set(sort([translation_table[i] for i in outer_side_sorted]))
+                bip = (inner_labeled, outer_labeled)
+                push!(bipartitions, (inner_labeled, outer_labeled))
+
+                ## add sup vals or bl when present or NaN when absent
+                if ismissing(edge_support)
+                    bips_supports[bip]= NaN
+                else
+                bips_supports[bip] = edge_support
+                end
+                if ismissing(edge_bl)
+                    bips_bls[bip] = NaN
+                else
+                    bips_bls[bip] = edge_bl
+                end
+                ###
+                
+            elseif length(inner_side_sorted) == length(outer_side_sorted)
+                if inner_side_sorted < outer_side_sorted
+                    inner_labeled = Set(sort([translation_table[i] for i in inner_side_sorted]))
+                    outer_labeled = Set(sort([translation_table[i] for i in outer_side_sorted]))
+                    bip = (inner_labeled, outer_labeled)
+                    push!(bipartitions, (inner_labeled, outer_labeled))
+                        
+                    ## add sup vals or bl when present or NaN when absent
+                    if ismissing(edge_support)
+                        bips_supports[bip]= NaN
+                    else
+                        bips_supports[bip] = edge_support
+                    end
+                    if ismissing(edge_bl)
+                        bips_bls[bip] = NaN
+                    else
+                        bips_bls[bip] = edge_bl
+                    end
+                    ###   
+                end
+            end
+        end
+    end
+    bipartitions = unique(bipartitions)
+    return bipartitions, bips_supports, bips_bls, ntaxa
+end
+###
+
+### quartet topology find the correct quartets associated with each node in a tree.
+## underpins all consensus method based on quartets
+function quartet_topology(tree::MetaGraph, A::String, B::String, C::String, D::String)::Union{String,Nothing}
+    candidate_pairings = [
+        (A, B, C, D, "AB|CD"),
+        (A, C, B, D, "AC|BD"),
+        (A, D, B, C, "AD|BC")
+    ]
+    
+    for (x, y, w, z, label) in candidate_pairings
+        lca_xy = find_lca(tree, [x, y],"quartet_pair"; warn_on_failure=false)
+        if isnothing(lca_xy)
+            continue
+        end
+        ## check whether one side of lca_xy (blocking some neighbour)
+        ## gives exactly {x, y} — confirming x,y form a clade excluding w,z
+        for blocked in neighbor_labels(tree, lca_xy)
+            leaves::Set{String} = Set{String}()
+            visited::Set{String} = Set{String}([blocked])
+            queue::Vector{String} = [lca_xy]
+            while !isempty(queue)
+                current::String = popfirst!(queue)
+                if current in visited
+                    continue
+                end
+                push!(visited, current)
+                if tree[current].is_a_leaf
+                    push!(leaves, current)
+                end
+                for nb::String in neighbor_labels(tree, current)
+                    if !(nb in visited)
+                        push!(queue, nb)
+                    end
+                end
+            end
+            if leaves == Set([x, y])
+                return label
+            end
+        end
+    end
+    return nothing  ## no pairing formed a clean 2-taxon clade — unresolved/polytomy
+end
+###
+
+### This function print all the bipartitions (down to quartets) in a tree to scree. 
+function print_bipartitions(trees::Vector{MetaGraph})
+    for (i, tree) in enumerate(trees)
+        fadj = get_tree_fadj_list(tree)
+        tt = get_taxa_translation_table(tree)
+        (bips, _, _, _) = bbfs_get_bipartitions(tree, fadj, tt)
+        println("Tree $i:")
+        for (inner, outer) in bips
+            println("  $(join(sort(collect(inner)),",")) | $(join(sort(collect(outer)),","))")
+        end
+    end
+    return nothing
+end
+
+
+
+
+
+
+
+
+
+### This function calculate the distance between two nodes 
+### as the number of hops / edges / nodes between the start and target
+### This is a standard BSF.
+function unweighted_path_distance(tree::MetaGraph, starting_point::String, target_node::String)::Union{Int64,Nothing}
+    visited::Set{String} = Set{String}()
+    queue::Vector{String} = [starting_point]
+    distance::Vector{Int64} = [0]
+    while !isempty(queue)
+        current= popfirst!(queue)
+        current_distance=popfirst!(distance)
+        if current == target_node
+            return current_distance
+        end
+        if current in visited
+            continue
+        end
+        push!(visited, current)
+        for nb in neighbor_labels(tree, current)
+            if !(nb in visited)
+                push!(queue, nb) 
+                push!(distance, current_distance + 1)
+            end
+        end
+    end
+    return nothing 
+end
+
+### Takes a tree and a set of leaves to keep, delete the other leaves and generate a new tree.  
+### This is useful when we have a bunch of trees we want to remove taxa from (we pass the leaves to keep).
+### Usually the list of leaves to keep is the intersection of the leaves in two or more trees 
+function prune_tree(tree::MetaGraph, leaves_to_keep::Set{String})::MetaGraph
+
+    ### The idea is that we do not want to modify the trees in place so we deepcopy
+    pruned = deepcopy(tree)
+    
+    ## remove leaves not in keep set
+    for node::String in collect(labels(pruned))
+        if pruned[node].is_a_leaf && !(node in leaves_to_keep)
+            rem_vertex!(pruned, code_for(pruned, node)) ### rem_vertex! is a MetaGraph function
+        end
+    end
+    
+    ## collapse degree-2 internal nodes
+    changed::Bool = true
+    while changed
+        changed = false
+        for node::String in collect(labels(pruned)) ## list of all nodes inernal & leaves
+            if !pruned[node].is_a_leaf ### Check that node NOT a leaf
+                nbs = collect(neighbor_labels(pruned, node))
+                if length(nbs) == 2
+                    ## if an internal has two neighbours only get BLs both ways
+                    bl1::Union{Float64,Missing} = pruned[node, nbs[1]].length ## here syntax clear get length for edge defined by node and nbs1
+                    bl2::Union{Float64,Missing} = pruned[node, nbs[2]].length # same for nbs 2
+                    
+                    ## sum branch lengths of two edges — handle missing
+                    new_bl::Union{Float64,Missing} = missing
+                    if ismissing(bl1) && ismissing(bl2)
+                       new_bl = missing
+                    elseif ismissing(bl1)
+                      new_bl = bl2
+                    elseif ismissing(bl2)
+                       new_bl = bl1
+                    else
+                        new_bl = bl1 + bl2
+                    end
+                    
+                    ## connect the two neighbours directly
+                    pruned[nbs[1], nbs[2]] = EdgeData(new_bl)
+                    
+                    ## remove the degree-2 node
+                    rem_vertex!(pruned, code_for(pruned, node))
+                    changed = true
+                    break 
+                    ## Break exits the inner loop (here for loop)
+                    ## Key. We changed leaves set in place (rem_vertex!)
+                    ## So we must restart from scratch working on reduced set.
+                    ## while stay true so this is repeated till all 2d node deleted
+                end
+            end
+        end
+    end
+    return pruned
+end
+###
+
+### find the lca of a set of taxa in the metagraphs (treated as unrooted) so check all possible clades using blocked BFS.
 function find_lca(unrooted_tree::MetaGraph, taxa::Vector{String}, clade_name::String="unknown"; warn_on_failure::Bool=true)::Union{String,Nothing}
 
     taxa_set::Set{String} = Set{String}(taxa)
